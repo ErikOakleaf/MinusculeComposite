@@ -6,6 +6,8 @@ const Token = union(enum) {
     LParen,
     RParen,
     Equals,
+    Dot,
+    For,
     EOF,
 };
 
@@ -38,9 +40,10 @@ const Lexer = struct {
             '(' => Token.LParen,
             ')' => Token.RParen,
             '=' => Token.Equals,
+            '.' => Token.Dot,
             0 => Token.EOF,
             '"' => Token{ .String = try self.read_str() },
-            else => Token{ .Identifier = try self.read_identifier() },
+            else => match_identifier(try self.read_identifier()),
         };
 
         self.read_ch();
@@ -78,6 +81,15 @@ const Lexer = struct {
         return self.input[start_pos..self.pos];
     }
 
+    fn match_identifier(input: []const u8) Token {
+        // right now this just has a simple if statement
+        // if it grows to have a lot of keyword look into a
+        // string map
+        if (std.mem.eql(u8, input, "for")) return Token.For;
+
+        return Token{ .Identifier = input };
+    }
+
     fn read_str(self: *Lexer) ![]const u8 {
         self.read_ch(); // skip the first ' " ' so it does not get caught in the loop
 
@@ -112,6 +124,20 @@ test "next_token returns identifier for letter and digit sequences" {
         .Identifier => |val| try std.testing.expectEqualStrings("tester123", val),
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "next_token returns For token for \"for\"" {
+    const input = "for";
+    var lexer = Lexer.init(input);
+    const token = try lexer.next_token();
+    try std.testing.expect(token == Token.For);
+}
+
+test "next_token returns Dot token for '.'" {
+    const input = ".";
+    var lexer = Lexer.init(input);
+    const token = try lexer.next_token();
+    try std.testing.expect(token == Token.Dot);
 }
 
 test "next_token returns string for sequence within \" \"" {
@@ -153,9 +179,23 @@ test "next_token returns EOF at the end of the input" {
     try std.testing.expect(token == Token.EOF);
 }
 
+test "next_token deletes whitspace" {
+    const input = "\n \r \t =";
+    var lexer = Lexer.init(input);
+    const token = try lexer.next_token();
+    try std.testing.expect(token == Token.Equals);
+}
+
 test "next_token errors on identifier with leading number as input" {
     const input = "123something";
     var lexer = Lexer.init(input);
     const err = lexer.next_token();
     try std.testing.expectError(error.IdentifierStartsWithNumber, err);
+}
+
+test "next_token errors on unterminated string" {
+    const input = "\"123something";
+    var lexer = Lexer.init(input);
+    const err = lexer.next_token();
+    try std.testing.expectError(error.UnterminatedString, err);
 }
