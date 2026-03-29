@@ -21,13 +21,17 @@ const Lexer = struct {
     pos: u32, // current position in input (points to current char)
     read_pos: u32, // current reading position in input (after current char)
     ch: u8, // current char under examination
+    line: u32,
+    col: u32,
 
-    fn init(input: []const u8) Lexer {
+    fn init(input: []const u8, start_line: u32, start_col: u32) Lexer {
         var lexer = Lexer{
             .input = input,
             .pos = 0,
             .read_pos = 0,
             .ch = undefined,
+            .line = start_line,
+            .col = start_col,
         };
         lexer.read_ch();
         return lexer;
@@ -118,7 +122,7 @@ fn is_letter(ch: u8) bool {
 
 test "next_token returns identifier for letter and digit sequences" {
     const input = "tester123";
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(input, 0, 0);
     const token = try lexer.next_token();
     switch (token) {
         .Identifier => |val| try std.testing.expectEqualStrings("tester123", val),
@@ -128,21 +132,21 @@ test "next_token returns identifier for letter and digit sequences" {
 
 test "next_token returns For token for \"for\"" {
     const input = "for";
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(input, 0, 0);
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.For);
 }
 
 test "next_token returns Dot token for '.'" {
     const input = ".";
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(input, 0, 0);
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.Dot);
 }
 
 test "next_token returns string for sequence within \" \"" {
     const input = "\"hello world\"";
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(input, 0, 0);
     const token = try lexer.next_token();
     switch (token) {
         .String => |val| try std.testing.expectEqualStrings("hello world", val),
@@ -152,28 +156,28 @@ test "next_token returns string for sequence within \" \"" {
 
 test "next_token returns Equals for '='" {
     const input = "=";
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(input, 0, 0);
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.Equals);
 }
 
 test "next_token returns LParen for '('" {
     const input = "(";
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(input, 0, 0);
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.LParen);
 }
 
 test "next_token returns RParen for ')'" {
     const input = ")";
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(input, 0, 0);
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.RParen);
 }
 
 test "next_token returns EOF at the end of the input" {
     const input = ")";
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(input, 0, 0);
     var token = try lexer.next_token();
     token = try lexer.next_token();
     try std.testing.expect(token == Token.EOF);
@@ -181,21 +185,21 @@ test "next_token returns EOF at the end of the input" {
 
 test "next_token deletes whitspace" {
     const input = "\n \r \t =";
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(input, 0, 0);
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.Equals);
 }
 
 test "next_token errors on identifier with leading number as input" {
     const input = "123something";
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(input, 0, 0);
     const err = lexer.next_token();
     try std.testing.expectError(error.IdentifierStartsWithNumber, err);
 }
 
 test "next_token errors on unterminated string" {
     const input = "\"123something";
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(input, 0, 0);
     const err = lexer.next_token();
     try std.testing.expectError(error.UnterminatedString, err);
 }
