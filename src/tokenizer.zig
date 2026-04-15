@@ -1,8 +1,11 @@
 const std = @import("std");
 
 const Token = union(enum) {
+    RawText: []const u8,
     String: []const u8,
     Identifier: []const u8,
+    OpenDelim,
+    CloseDelim,
     LParen,
     RParen,
     Equals,
@@ -14,6 +17,12 @@ const Token = union(enum) {
 const LexError = error{
     IdentifierStartsWithNumber,
     UnterminatedString,
+    MissingCurlyBrace,
+};
+
+const ParseMode = enum {
+    RawText,
+    Template,
 };
 
 const Lexer = struct {
@@ -23,6 +32,7 @@ const Lexer = struct {
     ch: u8, // current char under examination
     line: u32,
     col: u32,
+    parse_mode: ParseMode,
 
     fn init(input: []const u8, start_line: u32, start_col: u32) Lexer {
         var lexer = Lexer{
@@ -32,15 +42,51 @@ const Lexer = struct {
             .ch = undefined,
             .line = start_line,
             .col = start_col,
+            .parse_mode = ParseMode.RawText,
         };
         lexer.read_ch();
         return lexer;
     }
 
+    fn peek(self: *Lexer) u8 {
+        if (self.read_pos >= self.input.len) return 0;
+        return self.input[self.read_pos];
+    }
+
     fn next_token(self: *Lexer) !Token {
+        return switch (self.parse_mode) {
+            ParseMode.RawText => self.next_raw_text_token(),
+            ParseMode.Template => next_template_token(self),
+        };
+    }
+
+    fn next_raw_text_token(self: *Lexer) Token {
+        return Token{ .RawText = self.read_raw_text() };
+    }
+
+    fn next_template_token(self: *Lexer) !Token {
         self.skip_whitespace();
 
-        const token = switch (self.ch) {
+        const token = blk: switch (self.ch) {
+            '{' => {
+                self.read_ch();
+
+                if (self.ch != '{') {
+                    return error.MissingCurlyBrace;
+                }
+                break :blk Token.OpenDelim;
+            },
+            '}' => {
+                self.read_ch();
+
+                if (self.ch != '}') {
+                    return error.MissingCurlyBrace;
+                }
+
+                self.parse_mode = ParseMode.RawText;
+
+                break :blk Token.CloseDelim;
+            },
             '(' => Token.LParen,
             ')' => Token.RParen,
             '=' => Token.Equals,
@@ -110,6 +156,18 @@ const Lexer = struct {
         const result = self.input[start_pos..self.pos];
         return result;
     }
+
+    fn read_raw_text(self: *Lexer) []const u8 {
+        const start_pos = self.pos;
+
+        while (self.ch != 0 and !(self.ch == '{' and self.peek() == '{')) {
+            self.read_ch();
+        }
+
+        self.parse_mode = ParseMode.Template;
+
+        return self.input[start_pos..self.pos];
+    }
 };
 
 // helpers
@@ -123,6 +181,7 @@ fn is_letter(ch: u8) bool {
 test "next_token returns identifier for letter and digit sequences" {
     const input = "tester123";
     var lexer = Lexer.init(input, 0, 0);
+    lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
     switch (token) {
         .Identifier => |val| try std.testing.expectEqualStrings("tester123", val),
@@ -133,6 +192,7 @@ test "next_token returns identifier for letter and digit sequences" {
 test "next_token returns For token for \"for\"" {
     const input = "for";
     var lexer = Lexer.init(input, 0, 0);
+    lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.For);
 }
@@ -140,6 +200,7 @@ test "next_token returns For token for \"for\"" {
 test "next_token returns Dot token for '.'" {
     const input = ".";
     var lexer = Lexer.init(input, 0, 0);
+    lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.Dot);
 }
@@ -147,6 +208,7 @@ test "next_token returns Dot token for '.'" {
 test "next_token returns string for sequence within \" \"" {
     const input = "\"hello world\"";
     var lexer = Lexer.init(input, 0, 0);
+    lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
     switch (token) {
         .String => |val| try std.testing.expectEqualStrings("hello world", val),
@@ -157,6 +219,7 @@ test "next_token returns string for sequence within \" \"" {
 test "next_token returns Equals for '='" {
     const input = "=";
     var lexer = Lexer.init(input, 0, 0);
+    lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.Equals);
 }
@@ -164,6 +227,7 @@ test "next_token returns Equals for '='" {
 test "next_token returns LParen for '('" {
     const input = "(";
     var lexer = Lexer.init(input, 0, 0);
+    lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.LParen);
 }
@@ -171,6 +235,7 @@ test "next_token returns LParen for '('" {
 test "next_token returns RParen for ')'" {
     const input = ")";
     var lexer = Lexer.init(input, 0, 0);
+    lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.RParen);
 }
@@ -178,6 +243,7 @@ test "next_token returns RParen for ')'" {
 test "next_token returns EOF at the end of the input" {
     const input = ")";
     var lexer = Lexer.init(input, 0, 0);
+    lexer.parse_mode = ParseMode.Template;
     var token = try lexer.next_token();
     token = try lexer.next_token();
     try std.testing.expect(token == Token.EOF);
@@ -186,6 +252,7 @@ test "next_token returns EOF at the end of the input" {
 test "next_token deletes whitspace" {
     const input = "\n \r \t =";
     var lexer = Lexer.init(input, 0, 0);
+    lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
     try std.testing.expect(token == Token.Equals);
 }
@@ -193,6 +260,7 @@ test "next_token deletes whitspace" {
 test "next_token errors on identifier with leading number as input" {
     const input = "123something";
     var lexer = Lexer.init(input, 0, 0);
+    lexer.parse_mode = ParseMode.Template;
     const err = lexer.next_token();
     try std.testing.expectError(error.IdentifierStartsWithNumber, err);
 }
@@ -200,6 +268,49 @@ test "next_token errors on identifier with leading number as input" {
 test "next_token errors on unterminated string" {
     const input = "\"123something";
     var lexer = Lexer.init(input, 0, 0);
+    lexer.parse_mode = ParseMode.Template;
     const err = lexer.next_token();
     try std.testing.expectError(error.UnterminatedString, err);
+}
+
+test "next_token returns raw_text token for raw text" {
+    const input = "hello world";
+    var lexer = Lexer.init(input, 0, 0);
+    const token = try lexer.next_token();
+    switch (token) {
+        .RawText => |val| try std.testing.expectEqualStrings("hello world", val),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "next_token handles mixed raw text and template tags" {
+    const input = "Hi {{ name }}!";
+    var lexer = Lexer.init(input, 0, 0);
+
+    var token = try lexer.next_token();
+    switch (token) {
+        .RawText => |val| try std.testing.expectEqualStrings("Hi ", val),
+        else => return error.TestUnexpectedRawText,
+    }
+
+    token = try lexer.next_token();
+    try std.testing.expect(token == Token.OpenDelim);
+
+    token = try lexer.next_token();
+    switch (token) {
+        .Identifier => |val| try std.testing.expectEqualStrings("name", val),
+        else => return error.TestUnexpectedIdentifier,
+    }
+
+    token = try lexer.next_token();
+    try std.testing.expect(token == Token.CloseDelim);
+
+    token = try lexer.next_token();
+    switch (token) {
+        .RawText => |val| try std.testing.expectEqualStrings("!", val),
+        else => return error.TestUnexpectedFinalRawText,
+    }
+
+    token = try lexer.next_token();
+    try std.testing.expect(token == Token.EOF);
 }
