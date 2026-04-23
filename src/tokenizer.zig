@@ -1,17 +1,29 @@
 const std = @import("std");
 
-const Token = union(enum) {
-    RawText: []const u8,
-    String: []const u8,
-    Identifier: []const u8,
-    OpenDelim,
-    CloseDelim,
-    LParen,
-    RParen,
-    Equals,
-    Dot,
-    For,
-    EOF,
+pub const Loc = struct {
+    line: u32,
+    col: u32,
+};
+
+const Token = struct {
+    tag: Tag,
+    loc: Loc,
+    data: []const u8,
+
+    const Tag = enum {
+        RawText,
+        String,
+        Identifier,
+        OpenDelim,
+        CloseDelim,
+        LParen,
+        RParen,
+        Equals,
+        Dot,
+        For,
+        In,
+        EOF,
+    };
 };
 
 const LexError = error{
@@ -34,14 +46,14 @@ const Lexer = struct {
     col: u32,
     parse_mode: ParseMode,
 
-    fn init(input: []const u8, start_line: u32, start_col: u32) Lexer {
+    fn init(input: []const u8) Lexer {
         var lexer = Lexer{
             .input = input,
             .pos = 0,
             .read_pos = 0,
             .ch = undefined,
-            .line = start_line,
-            .col = start_col,
+            .line = 0,
+            .col = 0,
             .parse_mode = ParseMode.RawText,
         };
         lexer.read_ch();
@@ -61,20 +73,32 @@ const Lexer = struct {
     }
 
     fn next_raw_text_token(self: *Lexer) Token {
-        return Token{ .RawText = self.read_raw_text() };
+        const start_loc = Loc{ .line = self.line, .col = self.col };
+        const raw_text = self.read_raw_text();
+        return Token{ .tag = .RawText, .loc = start_loc, .data = raw_text };
     }
 
     fn next_template_token(self: *Lexer) !Token {
         self.skip_whitespace();
 
-        const token = blk: switch (self.ch) {
+        const start_loc = Loc{ .line = self.line, .col = self.col };
+        const start_pos = self.pos;
+
+        var tag: Token.Tag = undefined;
+        var slice: []const u8 = undefined;
+
+        switch (self.ch) {
             '{' => {
                 self.read_ch();
 
                 if (self.ch != '{') {
                     return error.MissingCurlyBrace;
                 }
-                break :blk Token.OpenDelim;
+
+                self.read_ch();
+
+                tag = .OpenDelim;
+                slice = self.input[start_pos .. self.pos];
             },
             '}' => {
                 self.read_ch();
@@ -83,20 +107,50 @@ const Lexer = struct {
                     return error.MissingCurlyBrace;
                 }
 
+                self.read_ch();
+
+                tag = .CloseDelim;
+                slice = self.input[start_pos .. self.pos];
+
                 self.parse_mode = ParseMode.RawText;
-
-                break :blk Token.CloseDelim;
             },
-            '(' => Token.LParen,
-            ')' => Token.RParen,
-            '=' => Token.Equals,
-            '.' => Token.Dot,
-            0 => Token.EOF,
-            '"' => Token{ .String = try self.read_str() },
-            else => match_identifier(try self.read_identifier()),
-        };
+            '(' => {
+                self.read_ch();
+                tag = .LParen;
+                slice = self.input[start_pos .. self.pos];
+            },
+            ')' => {
+                self.read_ch();
+                tag = .RParen;
+                slice = self.input[start_pos .. self.pos];
+            },
+            '=' => {
+                self.read_ch();
+                tag = .Equals;
+                slice = self.input[start_pos .. self.pos];
+            },
+            '.' => {
+                self.read_ch();
+                tag = .Dot;
+                slice = self.input[start_pos .. self.pos];
+            },
+            0 => {
+                self.read_ch();
+                tag = .EOF;
+                slice = "";
+            },
+            '"' => {
+                tag = .String;
+                slice = try self.read_str();
+                self.read_ch();
+            },
+            else => {
+                slice = try self.read_identifier();
+                tag = match_identifier(slice);
+            },
+        }
 
-        self.read_ch();
+        const token = Token{ .tag = tag, .loc = start_loc, .data = slice };
         return token;
     }
 
@@ -105,6 +159,13 @@ const Lexer = struct {
             self.ch = 0;
         } else {
             self.ch = self.input[self.read_pos];
+        }
+
+        if (self.ch == '\n') {
+            self.line += 1;
+            self.col = 0;
+        } else {
+            self.col += 1;
         }
 
         self.pos = self.read_pos;
@@ -131,13 +192,14 @@ const Lexer = struct {
         return self.input[start_pos..self.pos];
     }
 
-    fn match_identifier(input: []const u8) Token {
+    fn match_identifier(input: []const u8) Token.Tag {
         // right now this just has a simple if statement
         // if it grows to have a lot of keyword look into a
         // string map
-        if (std.mem.eql(u8, input, "for")) return Token.For;
+        if (std.mem.eql(u8, input, "for")) return Token.Tag.For;
+        if (std.mem.eql(u8, input, "in")) return Token.Tag.In;
 
-        return Token{ .Identifier = input };
+        return Token.Tag.Identifier;
     }
 
     fn read_str(self: *Lexer) ![]const u8 {
@@ -180,94 +242,126 @@ fn is_letter(ch: u8) bool {
 
 test "next_token returns identifier for letter and digit sequences" {
     const input = "tester123";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    switch (token) {
-        .Identifier => |val| try std.testing.expectEqualStrings("tester123", val),
-        else => return error.TestUnexpectedResult,
-    }
+    try std.testing.expect(token.tag == Token.Tag.Identifier);
+    try std.testing.expectEqualStrings(token.data, "tester123");
 }
 
 test "next_token returns For token for \"for\"" {
     const input = "for";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    try std.testing.expect(token == Token.For);
+    try std.testing.expect(token.tag == Token.Tag.For);
+    try std.testing.expectEqualStrings(token.data, "for");
 }
 
 test "next_token returns Dot token for '.'" {
     const input = ".";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    try std.testing.expect(token == Token.Dot);
+    try std.testing.expect(token.tag == Token.Tag.Dot);
+    try std.testing.expectEqualStrings(token.data, ".");
 }
 
 test "next_token returns string for sequence within \" \"" {
     const input = "\"hello world\"";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    switch (token) {
-        .String => |val| try std.testing.expectEqualStrings("hello world", val),
-        else => return error.TestUnexpectedResult,
-    }
+
+    try std.testing.expect(token.tag == Token.Tag.String);
+    try std.testing.expectEqualStrings(token.data, "hello world");
 }
 
 test "next_token returns Equals for '='" {
     const input = "=";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    try std.testing.expect(token == Token.Equals);
+
+    try std.testing.expect(token.tag == Token.Tag.Equals);
+    try std.testing.expectEqualStrings(token.data, "=");
 }
 
 test "next_token returns LParen for '('" {
     const input = "(";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    try std.testing.expect(token == Token.LParen);
+
+    try std.testing.expect(token.tag == Token.Tag.LParen);
+    try std.testing.expectEqualStrings(token.data, "(");
 }
 
 test "next_token returns RParen for ')'" {
     const input = ")";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    try std.testing.expect(token == Token.RParen);
+
+    try std.testing.expect(token.tag == Token.Tag.RParen);
+    try std.testing.expectEqualStrings(token.data, ")");
 }
 
 test "next_token returns EOF at the end of the input" {
     const input = ")";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     var token = try lexer.next_token();
     token = try lexer.next_token();
-    try std.testing.expect(token == Token.EOF);
+
+    try std.testing.expect(token.tag == Token.Tag.EOF);
+    try std.testing.expectEqualStrings(token.data, "");
 }
 
 test "next_token deletes whitspace" {
     const input = "\n \r \t =";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    try std.testing.expect(token == Token.Equals);
+
+    try std.testing.expect(token.tag == Token.Tag.Equals);
+    try std.testing.expectEqualStrings(token.data, "=");
 }
 
 test "next_token errors on identifier with leading number as input" {
     const input = "123something";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const err = lexer.next_token();
+
     try std.testing.expectError(error.IdentifierStartsWithNumber, err);
+}
+
+test "next_token returns for loop tokens in for loop" {
+    const input = "for i in y";
+    var lexer = Lexer.init(input);
+    lexer.parse_mode = ParseMode.Template;
+
+    const for_token = try lexer.next_token();
+    try std.testing.expect(for_token.tag == Token.Tag.For);
+    try std.testing.expectEqualStrings(for_token.data, "for");
+
+    const i_token = try lexer.next_token();
+    try std.testing.expect(i_token.tag == Token.Tag.Identifier);
+    try std.testing.expectEqualStrings(i_token.data, "i");
+
+    const in_token = try lexer.next_token();
+    try std.testing.expect(in_token.tag == Token.Tag.In);
+    try std.testing.expectEqualStrings(in_token.data, "in");
+
+    const y_token = try lexer.next_token();
+    try std.testing.expect(y_token.tag == Token.Tag.Identifier);
+    try std.testing.expectEqualStrings(y_token.data, "y");
 }
 
 test "next_token errors on unterminated string" {
     const input = "\"123something";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const err = lexer.next_token();
     try std.testing.expectError(error.UnterminatedString, err);
@@ -275,42 +369,38 @@ test "next_token errors on unterminated string" {
 
 test "next_token returns raw_text token for raw text" {
     const input = "hello world";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
     const token = try lexer.next_token();
-    switch (token) {
-        .RawText => |val| try std.testing.expectEqualStrings("hello world", val),
-        else => return error.TestUnexpectedResult,
-    }
+
+    try std.testing.expect(token.tag == Token.Tag.RawText);
+    try std.testing.expectEqualStrings(token.data, "hello world");
 }
 
 test "next_token handles mixed raw text and template tags" {
     const input = "Hi {{ name }}!";
-    var lexer = Lexer.init(input, 0, 0);
+    var lexer = Lexer.init(input);
 
     var token = try lexer.next_token();
-    switch (token) {
-        .RawText => |val| try std.testing.expectEqualStrings("Hi ", val),
-        else => return error.TestUnexpectedRawText,
-    }
+    try std.testing.expect(token.tag == Token.Tag.RawText);
+    try std.testing.expectEqualStrings(token.data, "Hi ");
 
     token = try lexer.next_token();
-    try std.testing.expect(token == Token.OpenDelim);
+    try std.testing.expect(token.tag == Token.Tag.OpenDelim);
+    try std.testing.expectEqualStrings(token.data, "{{");
 
     token = try lexer.next_token();
-    switch (token) {
-        .Identifier => |val| try std.testing.expectEqualStrings("name", val),
-        else => return error.TestUnexpectedIdentifier,
-    }
+    try std.testing.expect(token.tag == Token.Tag.Identifier);
+    try std.testing.expectEqualStrings(token.data, "name");
 
     token = try lexer.next_token();
-    try std.testing.expect(token == Token.CloseDelim);
+    try std.testing.expect(token.tag == Token.Tag.CloseDelim);
+    try std.testing.expectEqualStrings(token.data, "}}");
 
     token = try lexer.next_token();
-    switch (token) {
-        .RawText => |val| try std.testing.expectEqualStrings("!", val),
-        else => return error.TestUnexpectedFinalRawText,
-    }
+    try std.testing.expect(token.tag == Token.Tag.RawText);
+    try std.testing.expectEqualStrings(token.data, "!");
 
     token = try lexer.next_token();
-    try std.testing.expect(token == Token.EOF);
+    try std.testing.expect(token.tag == Token.Tag.EOF);
+    try std.testing.expectEqualStrings(token.data, "");
 }
