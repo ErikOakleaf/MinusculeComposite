@@ -1,11 +1,7 @@
 const std = @import("std");
+const Loc = @import("common.zig").Loc;
 
-pub const Loc = struct {
-    line: u32,
-    col: u32,
-};
-
-const Token = struct {
+pub const Token = struct {
     tag: Tag,
     loc: Loc,
     data: []const u8,
@@ -14,8 +10,6 @@ const Token = struct {
         RawText,
         String,
         Identifier,
-        OpenDelim,
-        CloseDelim,
         LParen,
         RParen,
         Equals,
@@ -26,7 +20,7 @@ const Token = struct {
     };
 };
 
-const LexError = error{
+pub const LexError = error{
     IdentifierStartsWithNumber,
     UnterminatedString,
     MissingCurlyBrace,
@@ -37,16 +31,17 @@ const ParseMode = enum {
     Template,
 };
 
-const Lexer = struct {
+pub const Lexer = struct {
     input: []const u8,
     pos: u32, // current position in input (points to current char)
     read_pos: u32, // current reading position in input (after current char)
     ch: u8, // current char under examination
     line: u32,
     col: u32,
+    error_loc: ?Loc,
     parse_mode: ParseMode,
 
-    fn init(input: []const u8) Lexer {
+    pub fn init(input: []const u8) Lexer {
         var lexer = Lexer{
             .input = input,
             .pos = 0,
@@ -54,6 +49,7 @@ const Lexer = struct {
             .ch = undefined,
             .line = 0,
             .col = 0,
+            .error_loc = null,
             .parse_mode = ParseMode.RawText,
         };
         lexer.read_ch();
@@ -74,6 +70,11 @@ const Lexer = struct {
 
     fn next_raw_text_token(self: *Lexer) Token {
         const start_loc = Loc{ .line = self.line, .col = self.col };
+
+        if (self.ch == 0) {
+            return Token{ .tag = .EOF, .loc = start_loc, .data = "" };
+        }
+
         const raw_text = self.read_raw_text();
         return Token{ .tag = .RawText, .loc = start_loc, .data = raw_text };
     }
@@ -88,51 +89,35 @@ const Lexer = struct {
         var slice: []const u8 = undefined;
 
         switch (self.ch) {
-            '{' => {
-                self.read_ch();
-
-                if (self.ch != '{') {
-                    return error.MissingCurlyBrace;
-                }
-
-                self.read_ch();
-
-                tag = .OpenDelim;
-                slice = self.input[start_pos .. self.pos];
-            },
             '}' => {
                 self.read_ch();
-
                 if (self.ch != '}') {
+                    self.error_loc = Loc{ .col = self.col, .line = self.line };
                     return error.MissingCurlyBrace;
                 }
-
                 self.read_ch();
-
-                tag = .CloseDelim;
-                slice = self.input[start_pos .. self.pos];
-
                 self.parse_mode = ParseMode.RawText;
+                return self.next_raw_text_token(); // skip straight to next real token
             },
             '(' => {
                 self.read_ch();
                 tag = .LParen;
-                slice = self.input[start_pos .. self.pos];
+                slice = self.input[start_pos..self.pos];
             },
             ')' => {
                 self.read_ch();
                 tag = .RParen;
-                slice = self.input[start_pos .. self.pos];
+                slice = self.input[start_pos..self.pos];
             },
             '=' => {
                 self.read_ch();
                 tag = .Equals;
-                slice = self.input[start_pos .. self.pos];
+                slice = self.input[start_pos..self.pos];
             },
             '.' => {
                 self.read_ch();
                 tag = .Dot;
-                slice = self.input[start_pos .. self.pos];
+                slice = self.input[start_pos..self.pos];
             },
             0 => {
                 self.read_ch();
@@ -180,6 +165,7 @@ const Lexer = struct {
 
     fn read_identifier(self: *Lexer) ![]const u8 {
         if (self.ch >= '0' and self.ch <= '9') {
+            self.error_loc = Loc{ .col = self.col, .line = self.line };
             return error.IdentifierStartsWithNumber;
         }
 
@@ -212,6 +198,7 @@ const Lexer = struct {
         }
 
         if (self.ch == 0) {
+            self.error_loc = Loc{ .col = self.col, .line = self.line };
             return error.UnterminatedString;
         }
 
@@ -226,9 +213,15 @@ const Lexer = struct {
             self.read_ch();
         }
 
-        self.parse_mode = ParseMode.Template;
+        const end_pos = self.pos;
 
-        return self.input[start_pos..self.pos];
+        if (self.ch == '{') {
+            self.read_ch();
+            self.read_ch();
+            self.parse_mode = ParseMode.Template;
+        }
+
+        return self.input[start_pos..end_pos];
     }
 };
 
@@ -385,16 +378,8 @@ test "next_token handles mixed raw text and template tags" {
     try std.testing.expectEqualStrings(token.data, "Hi ");
 
     token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.OpenDelim);
-    try std.testing.expectEqualStrings(token.data, "{{");
-
-    token = try lexer.next_token();
     try std.testing.expect(token.tag == Token.Tag.Identifier);
     try std.testing.expectEqualStrings(token.data, "name");
-
-    token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.CloseDelim);
-    try std.testing.expectEqualStrings(token.data, "}}");
 
     token = try lexer.next_token();
     try std.testing.expect(token.tag == Token.Tag.RawText);
