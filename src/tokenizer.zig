@@ -6,9 +6,6 @@ pub const Token = struct {
     loc: Loc,
     data: []const u8,
 
-    // TODO - closing and opening delimiters should probably be added back since they probably have to be used
-    // to check that only one thing is done within each expression if we don't want to be able to do more than one thing
-
     pub const Tag = enum {
         RawText,
         String,
@@ -73,7 +70,7 @@ pub const Lexer = struct {
         };
     }
 
-    fn next_raw_text_token(self: *Lexer) Token {
+    fn next_raw_text_token(self: *Lexer) !Token {
         const start_loc = Loc{ .line = self.line, .col = self.col };
 
         if (self.ch == 0) {
@@ -81,6 +78,11 @@ pub const Lexer = struct {
         }
 
         const raw_text = self.read_raw_text();
+
+        if (is_all_whitespace(raw_text)) {
+            return self.next_template_token();
+        }
+
         return Token{ .tag = .RawText, .loc = start_loc, .data = raw_text };
     }
 
@@ -233,6 +235,7 @@ pub const Lexer = struct {
 };
 
 // helpers
+
 fn is_letter(ch: u8) bool {
     return switch (ch) {
         '0'...'9', 'A'...'Z', 'a'...'z', '_' => true,
@@ -240,13 +243,24 @@ fn is_letter(ch: u8) bool {
     };
 }
 
+fn is_all_whitespace(s: []const u8) bool {
+    for (s) |c| {
+        if (!(c == ' ' or c == '\n' or c == '\t' or c == '\r')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// tests
+
 test "next_token returns identifier for letter and digit sequences" {
     const input = "tester123";
     var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.Identifier);
-    try std.testing.expectEqualStrings(token.data, "tester123");
+    try std.testing.expectEqual(Token.Tag.Identifier, token.tag);
+    try std.testing.expectEqualStrings("tester123", token.data);
 }
 
 test "next_token returns For token for \"for\"" {
@@ -254,8 +268,8 @@ test "next_token returns For token for \"for\"" {
     var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.For);
-    try std.testing.expectEqualStrings(token.data, "for");
+    try std.testing.expectEqual(Token.Tag.For, token.tag);
+    try std.testing.expectEqualStrings("for", token.data);
 }
 
 test "next_token returns In token for \"in\"" {
@@ -263,8 +277,8 @@ test "next_token returns In token for \"in\"" {
     var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.In);
-    try std.testing.expectEqualStrings(token.data, "in");
+    try std.testing.expectEqual(Token.Tag.In, token.tag);
+    try std.testing.expectEqualStrings("in", token.data);
 }
 
 test "next_token returns End token for \"end\"" {
@@ -272,8 +286,8 @@ test "next_token returns End token for \"end\"" {
     var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.End);
-    try std.testing.expectEqualStrings(token.data, "end");
+    try std.testing.expectEqual(Token.Tag.End, token.tag);
+    try std.testing.expectEqualStrings("end", token.data);
 }
 
 test "next_token returns Dot token for '.'" {
@@ -281,8 +295,8 @@ test "next_token returns Dot token for '.'" {
     var lexer = Lexer.init(input);
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.Dot);
-    try std.testing.expectEqualStrings(token.data, ".");
+    try std.testing.expectEqual(Token.Tag.Dot, token.tag);
+    try std.testing.expectEqualStrings(".", token.data);
 }
 
 test "next_token returns string for sequence within \" \"" {
@@ -291,8 +305,8 @@ test "next_token returns string for sequence within \" \"" {
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
 
-    try std.testing.expect(token.tag == Token.Tag.String);
-    try std.testing.expectEqualStrings(token.data, "hello world");
+    try std.testing.expectEqual(Token.Tag.String, token.tag);
+    try std.testing.expectEqualStrings("hello world", token.data);
 }
 
 test "next_token returns Equals for '='" {
@@ -301,8 +315,8 @@ test "next_token returns Equals for '='" {
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
 
-    try std.testing.expect(token.tag == Token.Tag.Equals);
-    try std.testing.expectEqualStrings(token.data, "=");
+    try std.testing.expectEqual(Token.Tag.Equals, token.tag);
+    try std.testing.expectEqualStrings("=", token.data);
 }
 
 test "next_token returns LParen for '('" {
@@ -311,8 +325,8 @@ test "next_token returns LParen for '('" {
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
 
-    try std.testing.expect(token.tag == Token.Tag.LParen);
-    try std.testing.expectEqualStrings(token.data, "(");
+    try std.testing.expectEqual(Token.Tag.LParen, token.tag);
+    try std.testing.expectEqualStrings("(", token.data);
 }
 
 test "next_token returns RParen for ')'" {
@@ -321,8 +335,8 @@ test "next_token returns RParen for ')'" {
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
 
-    try std.testing.expect(token.tag == Token.Tag.RParen);
-    try std.testing.expectEqualStrings(token.data, ")");
+    try std.testing.expectEqual(Token.Tag.RParen, token.tag);
+    try std.testing.expectEqualStrings(")", token.data);
 }
 
 test "next_token returns EOF at the end of the input" {
@@ -332,8 +346,8 @@ test "next_token returns EOF at the end of the input" {
     var token = try lexer.next_token();
     token = try lexer.next_token();
 
-    try std.testing.expect(token.tag == Token.Tag.EOF);
-    try std.testing.expectEqualStrings(token.data, "");
+    try std.testing.expectEqual(Token.Tag.EOF, token.tag);
+    try std.testing.expectEqualStrings("", token.data);
 }
 
 test "next_token deletes whitspace" {
@@ -342,8 +356,8 @@ test "next_token deletes whitspace" {
     lexer.parse_mode = ParseMode.Template;
     const token = try lexer.next_token();
 
-    try std.testing.expect(token.tag == Token.Tag.Equals);
-    try std.testing.expectEqualStrings(token.data, "=");
+    try std.testing.expectEqual(Token.Tag.Equals, token.tag);
+    try std.testing.expectEqualStrings("=", token.data);
 }
 
 test "next_token errors on identifier with leading number as input" {
@@ -361,20 +375,20 @@ test "next_token returns for loop tokens in for loop" {
     lexer.parse_mode = ParseMode.Template;
 
     const for_token = try lexer.next_token();
-    try std.testing.expect(for_token.tag == Token.Tag.For);
-    try std.testing.expectEqualStrings(for_token.data, "for");
+    try std.testing.expectEqual(Token.Tag.For, for_token.tag);
+    try std.testing.expectEqualStrings("for", for_token.data);
 
     const i_token = try lexer.next_token();
-    try std.testing.expect(i_token.tag == Token.Tag.Identifier);
-    try std.testing.expectEqualStrings(i_token.data, "i");
+    try std.testing.expectEqual(Token.Tag.Identifier, i_token.tag);
+    try std.testing.expectEqualStrings("i", i_token.data);
 
     const in_token = try lexer.next_token();
-    try std.testing.expect(in_token.tag == Token.Tag.In);
-    try std.testing.expectEqualStrings(in_token.data, "in");
+    try std.testing.expectEqual(Token.Tag.In, in_token.tag);
+    try std.testing.expectEqualStrings("in", in_token.data);
 
     const y_token = try lexer.next_token();
-    try std.testing.expect(y_token.tag == Token.Tag.Identifier);
-    try std.testing.expectEqualStrings(y_token.data, "y");
+    try std.testing.expectEqual(Token.Tag.Identifier, y_token.tag);
+    try std.testing.expectEqualStrings("y", y_token.data);
 }
 
 test "next_token errors on unterminated string" {
@@ -390,8 +404,8 @@ test "next_token returns raw_text token for raw text" {
     var lexer = Lexer.init(input);
     const token = try lexer.next_token();
 
-    try std.testing.expect(token.tag == Token.Tag.RawText);
-    try std.testing.expectEqualStrings(token.data, "hello world");
+    try std.testing.expectEqual(Token.Tag.RawText, token.tag);
+    try std.testing.expectEqualStrings("hello world", token.data);
 }
 
 test "next_token handles mixed raw text and template tags" {
@@ -399,22 +413,63 @@ test "next_token handles mixed raw text and template tags" {
     var lexer = Lexer.init(input);
 
     var token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.RawText);
-    try std.testing.expectEqualStrings(token.data, "Hi ");
+    try std.testing.expectEqual(Token.Tag.RawText, token.tag);
+    try std.testing.expectEqualStrings("Hi ", token.data);
 
     token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.Identifier);
-    try std.testing.expectEqualStrings(token.data, "name");
+    try std.testing.expectEqual(Token.Tag.Identifier, token.tag);
+    try std.testing.expectEqualStrings("name", token.data);
 
     token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.ClosingDelim);
-    try std.testing.expectEqualStrings(token.data, "}}");
+    try std.testing.expectEqual(Token.Tag.ClosingDelim, token.tag);
+    try std.testing.expectEqualStrings("}}", token.data);
 
     token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.RawText);
-    try std.testing.expectEqualStrings(token.data, "!");
+    try std.testing.expectEqual(Token.Tag.RawText, token.tag);
+    try std.testing.expectEqualStrings("!", token.data);
 
     token = try lexer.next_token();
-    try std.testing.expect(token.tag == Token.Tag.EOF);
-    try std.testing.expectEqualStrings(token.data, "");
+    try std.testing.expectEqual(Token.Tag.EOF, token.tag);
+    try std.testing.expectEqualStrings("", token.data);
+}
+
+test "next_token handles two {{}} blocks with whitespace between without giving a RawText token" {
+    const input = "{{ block1 }}{{ block2 }}      \n     \t \r       {{ block3 }}\nsome raw text {{ block4 }}";
+    var lexer = Lexer.init(input);
+
+    var token = try lexer.next_token();
+    try std.testing.expectEqual(Token.Tag.Identifier, token.tag);
+    try std.testing.expectEqualStrings("block1", token.data);
+
+    token = try lexer.next_token();
+    try std.testing.expectEqual(Token.Tag.ClosingDelim, token.tag);
+    try std.testing.expectEqualStrings("}}", token.data);
+
+    token = try lexer.next_token();
+    try std.testing.expectEqual(Token.Tag.Identifier, token.tag);
+    try std.testing.expectEqualStrings("block2", token.data);
+
+    token = try lexer.next_token();
+    try std.testing.expectEqual(Token.Tag.ClosingDelim, token.tag);
+    try std.testing.expectEqualStrings("}}", token.data);
+
+    token = try lexer.next_token();
+    try std.testing.expectEqual(Token.Tag.Identifier, token.tag);
+    try std.testing.expectEqualStrings("block3", token.data);
+
+    token = try lexer.next_token();
+    try std.testing.expectEqual(Token.Tag.ClosingDelim, token.tag);
+    try std.testing.expectEqualStrings("}}", token.data);
+
+    token = try lexer.next_token();
+    try std.testing.expectEqual(Token.Tag.RawText, token.tag);
+    try std.testing.expectEqualStrings("\nsome raw text ", token.data);
+
+    token = try lexer.next_token();
+    try std.testing.expectEqual(Token.Tag.Identifier, token.tag);
+    try std.testing.expectEqualStrings("block4", token.data);
+
+    token = try lexer.next_token();
+    try std.testing.expectEqual(Token.Tag.ClosingDelim, token.tag);
+    try std.testing.expectEqualStrings("}}", token.data);
 }
