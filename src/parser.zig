@@ -55,7 +55,7 @@ const InterpolationValue = union(enum) {
 // ---------------- Parser ----------------
 
 pub const ParserError = error{
-    UnexpectedToken,
+    ExpectedToken,
 };
 
 const Parser = struct {
@@ -92,7 +92,7 @@ const Parser = struct {
             try self.next_token();
         } else {
             self.error_loc = self.cur_token.loc;
-            return error.UnexpectedToken;
+            return error.ExpectedToken;
         }
     }
 
@@ -117,7 +117,9 @@ const Parser = struct {
 
     fn parse_interpolation(self: *Parser) !Node {
         if (!self.peek_token_is(.Dot)) {
-            return Node{ .Interpolation = .{ .value = .{ .Direct = self.cur_token } } };
+            const value = self.cur_token;
+            try self.expect_peek(Token.Tag.ClosingDelim);
+            return Node{ .Interpolation = .{ .value = .{ .Direct = value } } };
         }
         const namespace = self.cur_token;
 
@@ -126,6 +128,8 @@ const Parser = struct {
         try self.expect_peek(Token.Tag.Identifier);
 
         const field = self.cur_token;
+
+        try self.expect_peek(Token.Tag.ClosingDelim);
 
         return Node{ .Interpolation = .{ .value = .{ .Path = .{ .namespace = namespace, .field = field } } } };
     }
@@ -183,7 +187,9 @@ test "parser returns correct nodes for interpolation" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const input = "{{ variable }}{{ namespace.field }}"
+    const input =
+        \\{{ variable }}
+        \\{{ namespace.field }}
     ;
     var lexer = Lexer.init(input);
     var parser = try Parser.init(&lexer, allocator);
@@ -191,31 +197,29 @@ test "parser returns correct nodes for interpolation" {
     const ast = try parser.parse_file();
 
     const expected: []const Node = &[_]Node{
-        // {{ variable }} -> Direct
         .{
             .Interpolation = .{
                 .value = .{
                     .Direct = .{
                         .tag = .Identifier,
-                        .loc = .{ .line = 0, .col = 3 },
+                        .loc = .{ .line = 1, .col = 4 },
                         .data = "variable",
                     },
                 },
             },
         },
-        // {{ namespace.field }} -> Path
         .{
             .Interpolation = .{
                 .value = .{
                     .Path = .{
                         .namespace = .{
                             .tag = .Identifier,
-                            .loc = .{ .line = 1, .col = 3 },
+                            .loc = .{ .line = 2, .col = 4 },
                             .data = "namespace",
                         },
                         .field = .{
                             .tag = .Identifier,
-                            .loc = .{ .line = 1, .col = 13 },
+                            .loc = .{ .line = 2, .col = 14 },
                             .data = "field",
                         },
                     },
