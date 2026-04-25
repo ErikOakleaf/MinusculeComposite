@@ -6,16 +6,21 @@ pub const Token = struct {
     loc: Loc,
     data: []const u8,
 
-    const Tag = enum {
+    // TODO - closing and opening delimiters should probably be added back since they probably have to be used
+    // to check that only one thing is done within each expression if we don't want to be able to do more than one thing
+
+    pub const Tag = enum {
         RawText,
         String,
         Identifier,
         LParen,
         RParen,
+        ClosingDelim,
         Equals,
         Dot,
         For,
         In,
+        End,
         EOF,
     };
 };
@@ -61,7 +66,7 @@ pub const Lexer = struct {
         return self.input[self.read_pos];
     }
 
-    fn next_token(self: *Lexer) !Token {
+    pub fn next_token(self: *Lexer) !Token {
         return switch (self.parse_mode) {
             ParseMode.RawText => self.next_raw_text_token(),
             ParseMode.Template => next_template_token(self),
@@ -97,7 +102,8 @@ pub const Lexer = struct {
                 }
                 self.read_ch();
                 self.parse_mode = ParseMode.RawText;
-                return self.next_raw_text_token(); // skip straight to next real token
+                tag = .ClosingDelim;
+                slice = self.input[start_pos..self.pos];
             },
             '(' => {
                 self.read_ch();
@@ -184,6 +190,7 @@ pub const Lexer = struct {
         // string map
         if (std.mem.eql(u8, input, "for")) return Token.Tag.For;
         if (std.mem.eql(u8, input, "in")) return Token.Tag.In;
+        if (std.mem.eql(u8, input, "end")) return Token.Tag.End;
 
         return Token.Tag.Identifier;
     }
@@ -249,6 +256,24 @@ test "next_token returns For token for \"for\"" {
     const token = try lexer.next_token();
     try std.testing.expect(token.tag == Token.Tag.For);
     try std.testing.expectEqualStrings(token.data, "for");
+}
+
+test "next_token returns In token for \"in\"" {
+    const input = "in";
+    var lexer = Lexer.init(input);
+    lexer.parse_mode = ParseMode.Template;
+    const token = try lexer.next_token();
+    try std.testing.expect(token.tag == Token.Tag.In);
+    try std.testing.expectEqualStrings(token.data, "in");
+}
+
+test "next_token returns End token for \"end\"" {
+    const input = "end";
+    var lexer = Lexer.init(input);
+    lexer.parse_mode = ParseMode.Template;
+    const token = try lexer.next_token();
+    try std.testing.expect(token.tag == Token.Tag.End);
+    try std.testing.expectEqualStrings(token.data, "end");
 }
 
 test "next_token returns Dot token for '.'" {
@@ -380,6 +405,10 @@ test "next_token handles mixed raw text and template tags" {
     token = try lexer.next_token();
     try std.testing.expect(token.tag == Token.Tag.Identifier);
     try std.testing.expectEqualStrings(token.data, "name");
+
+    token = try lexer.next_token();
+    try std.testing.expect(token.tag == Token.Tag.ClosingDelim);
+    try std.testing.expectEqualStrings(token.data, "}}");
 
     token = try lexer.next_token();
     try std.testing.expect(token.tag == Token.Tag.RawText);
