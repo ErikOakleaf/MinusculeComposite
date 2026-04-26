@@ -158,41 +158,42 @@ const Parser = struct {
 
         // handle empty args
         if (self.peek_token_is(.RParen)) {
-            try self.next_token();
             return args.items;
         }
 
-        while (!self.cur_token_is(Token.Tag.RParen) and !self.cur_token_is(Token.Tag.EOF)) {
-            try self.next_token();
-
+        while (!self.cur_token_is(Token.Tag.ClosingDelim) and !self.cur_token_is(Token.Tag.EOF)) {
+            try self.expect_peek(Token.Tag.Identifier);
             const key = self.cur_token;
+
             try self.expect_peek(Token.Tag.Equals);
             try self.next_token();
 
             const value: ArgumentValue = switch (self.cur_token.tag) {
-                .String => .{ .String = self.cur_token },
-                .Identifier => blk: {
-                    if (self.peek_token_is(.Dot)) {
-                        const namespace = self.cur_token;
-                        try self.next_token();
+                Token.Tag.String => ArgumentValue{ .String = self.cur_token },
+                Token.Tag.Identifier => blk: {
+                    if (self.peek_token.tag == Token.Tag.Dot) {
+                        const ns = self.cur_token;
 
-                        try self.expect_peek(.Identifier);
+                        try self.next_token(); // consume dot
+                        try self.expect_peek(Token.Tag.Identifier);
+                        const field = self.cur_token;
 
-                        break :blk .{ .Path = .{ .namespace = namespace, .field = self.cur_token } };
+                        break :blk .{ .Path = .{ .namespace = ns, .field = field } };
                     }
-                    break :blk .{ .Direct = self.cur_token };
+
+                    const direct = self.cur_token;
+                    break :blk .{ .Direct = direct };
                 },
-                else => {
-                    self.error_loc = self.cur_token.loc;
-                    return error.UnexpectedToken;
-                },
+                else => return error.UnexpectedToken,
             };
 
-            const arg: Argument = .{ .key = key, .value = value };
+            const arg = Argument{ .key = key, .value = value };
             try args.append(self.allocator, arg);
 
-            if (self.peek_token_is(.Comma)) {
+            if (self.peek_token_is(Token.Tag.Comma)) {
                 try self.next_token();
+            } else if (self.peek_token_is(Token.Tag.RParen)) {
+                break;
             }
         }
 
@@ -238,14 +239,46 @@ fn expectEqualNodes(expected: []const Node, actual: []const Node) !void {
                     },
                 }
             },
+            .ComponentCall => |e_component| {
+                const a_component = a.ComponentCall;
+
+                try expectEqualToken(e_component.name, a_component.name);
+
+                std.debug.print("comparing args len: expected={any} actual={any}\n", .{ e_component.args.len, a_component.args.len });
+                try std.testing.expectEqual(e_component.args.len, a_component.args.len);
+
+                for (e_component.args, a_component.args) |e_arg, a_arg| {
+                    try expectEqualToken(e_arg.key, a_arg.key);
+
+                    std.debug.print("comparing arg value tags: expected={s} actual={s}\n", .{
+                        @tagName(e_arg.value),
+                        @tagName(a_arg.value),
+                    });
+
+                    try std.testing.expectEqual(std.meta.activeTag(e_arg.value), std.meta.activeTag(a_arg.value));
+
+                    switch (e_arg.value) {
+                        .String => |e_val| try expectEqualToken(e_val, a_arg.value.String),
+                        .Direct => |e_val| try expectEqualToken(e_val, a_arg.value.Direct),
+                        .Path => |e_path| {
+                            try expectEqualToken(e_path.namespace, a_arg.value.Path.namespace);
+                            try expectEqualToken(e_path.field, a_arg.value.Path.field);
+                        },
+                    }
+                }
+            },
             else => @panic("TODO: implement other node types"),
         }
     }
 }
 
 inline fn expectEqualToken(e: Token, a: Token) !void {
+    std.debug.print("comparing tag: expected={any} actual={any}\n", .{ e.tag, a.tag });
     try std.testing.expectEqual(e.tag, a.tag);
+
+    std.debug.print("comparing loc: expected={any} actual={any}\n", .{ e.loc, a.loc });
     try std.testing.expectEqual(e.loc, a.loc);
+
     try std.testing.expectEqualStrings(e.data, a.data);
 }
 
@@ -260,6 +293,22 @@ fn create_direct_interp(t: Token) Node {
 
 fn create_path_interp(ns: Token, field: Token) Node {
     return .{ .Interpolation = .{ .value = .{ .Path = .{ .namespace = ns, .field = field } } } };
+}
+
+fn create_component_call(name: Token, args: []const Argument) Node {
+    return .{ .ComponentCall = .{ .name = name, .args = args } };
+}
+
+fn create_argument_string(key: Token, value: Token) Argument {
+    return .{ .key = key, .value = .{ .String = value } };
+}
+
+fn create_argument_direct(key: Token, value: Token) Argument {
+    return .{ .key = key, .value = .{ .Direct = value } };
+}
+
+fn create_argument_path(key: Token, ns: Token, field: Token) Argument {
+    return .{ .key = key, .value = .{ .Path = .{ .namespace = ns, .field = field } } };
 }
 
 // Tests
@@ -286,73 +335,22 @@ test "parser returns correct nodes for interpolation" {
     try expectEqualNodes(expected, ast);
 }
 
-// test "parser returns correct nodes for component call" {
-//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-//     defer arena.deinit();
-//     const allocator = arena.allocator();
-//
-//     const input = "{{ component(arg1=\"hello\", arg2=world, arg3=hello.world )}}";
-//     var lexer = Lexer.init(input);
-//     var parser = try Parser.init(&lexer, allocator);
-//
-//     const ast = try parser.parse_file();
-//
-//     const expected: []const Node = &[_]Node{
-//         .{
-//             .ComponentCall = .{
-//                 .name = .{
-//                     .tag = .Identifier,
-//                     .loc = .{ .line = 1, .col = 4 },
-//                     .data = "component",
-//                 },
-//                 .args = &[_]Argument{
-//                     .{
-//                         .key = .{
-//                             .tag = .Identifier,
-//                             .loc = .{ .line = 1, .col = 14 },
-//                             .data = "arg1",
-//                         },
-//                         .value = .{ .String = .{
-//                             .tag = .String,
-//                             .loc = .{ .line = 1, .col = 20 },
-//                             .data = "hello",
-//                         } },
-//                     },
-//                     .{
-//                         .key = .{
-//                             .tag = .Identifier,
-//                             .loc = .{ .line = 1, .col = 28 },
-//                             .data = "arg2",
-//                         },
-//                         .value = .{ .Direct = .{
-//                             .tag = .Identifier,
-//                             .loc = .{ .line = 1, .col = 33 },
-//                             .data = "world",
-//                         } },
-//                     },
-//                     .{
-//                         .key = .{
-//                             .tag = .Identifier,
-//                             .loc = .{ .line = 1, .col = 40 },
-//                             .data = "arg3",
-//                         },
-//                         .value = .{ .Path = .{
-//                             .namespace = .{
-//                                 .tag = .Identifier,
-//                                 .loc = .{ .line = 1, .col = 45 },
-//                                 .data = "hello",
-//                             },
-//                             .field = .{
-//                                 .tag = .Identifier,
-//                                 .loc = .{ .line = 1, .col = 51 },
-//                                 .data = "world",
-//                             },
-//                         } },
-//                     },
-//                 },
-//             },
-//         },
-//     };
-//
-//     try expectEqualNodes(expected, ast);
-// }
+test "parser returns correct nodes for component call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const input = "{{ component(arg1=\"hello\", arg2=world, arg3=hello.world )}}";
+    var lexer = Lexer.init(input);
+    var parser = try Parser.init(&lexer, allocator);
+
+    const ast = try parser.parse_file();
+
+    const expected: []const Node = &[_]Node{create_component_call(create_token(Token.Tag.Identifier, 1, 4, "component"), &[_]Argument{
+        create_argument_string(create_token(Token.Tag.Identifier, 1, 14, "arg1"), create_token(Token.Tag.String, 1, 19, "hello")),
+        create_argument_direct(create_token(Token.Tag.Identifier, 1, 28, "arg2"), create_token(Token.Tag.Identifier, 1, 33, "world")),
+        create_argument_path(create_token(Token.Tag.Identifier, 1, 40, "arg3"), create_token(Token.Tag.Identifier, 1, 45, "hello"), create_token(Token.Tag.Identifier, 1, 51, "world")),
+    })};
+
+    try expectEqualNodes(expected, ast);
+}
