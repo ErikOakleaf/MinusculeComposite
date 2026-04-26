@@ -39,7 +39,8 @@ const Argument = struct {
 
 const ArgumentValue = union(enum) {
     String: Token,
-    Variable: VarPath,
+    Direct: Token,
+    Path: VarPath,
 };
 
 const VarPath = struct {
@@ -56,6 +57,7 @@ const InterpolationValue = union(enum) {
 
 pub const ParserError = error{
     ExpectedToken,
+    UnexpectedToken,
 };
 
 const Parser = struct {
@@ -110,7 +112,12 @@ const Parser = struct {
     fn parse_node(self: *Parser) !Node {
         return switch (self.cur_token.tag) {
             .RawText => Node{ .RawText = .{ .token = self.cur_token } },
-            .Identifier => self.parse_interpolation(),
+            .Identifier => {
+                if (self.peek_token_is(.LParen)) {
+                    return self.parse_component_call();
+                }
+                return self.parse_interpolation();
+            },
             else => @panic("TODO: implement other node types"),
         };
     }
@@ -133,7 +140,67 @@ const Parser = struct {
 
         return Node{ .Interpolation = .{ .value = .{ .Path = .{ .namespace = namespace, .field = field } } } };
     }
+
+    fn parse_component_call(self: *Parser) !Node {
+        const name = self.cur_token;
+        try self.expect_peek(Token.Tag.LParen);
+
+        const args = try self.parse_args();
+        try self.expect_peek(Token.Tag.RParen);
+
+        try self.expect_peek(Token.Tag.ClosingDelim);
+
+        return Node{ .ComponentCall = .{ .name = name, .args = args } };
+    }
+
+    fn parse_args(self: *Parser) ![]const Argument {
+        var args: std.ArrayList(Argument) = .empty;
+
+        // handle empty args
+        if (self.peek_token_is(.RParen)) {
+            try self.next_token();
+            return args.items;
+        }
+
+        while (!self.cur_token_is(Token.Tag.RParen) and !self.cur_token_is(Token.Tag.EOF)) {
+            try self.next_token();
+
+            const key = self.cur_token;
+            try self.expect_peek(Token.Tag.Equals);
+            try self.next_token();
+
+            const value: ArgumentValue = switch (self.cur_token.tag) {
+                .String => .{ .String = self.cur_token },
+                .Identifier => blk: {
+                    if (self.peek_token_is(.Dot)) {
+                        const namespace = self.cur_token;
+                        try self.next_token();
+
+                        try self.expect_peek(.Identifier);
+
+                        break :blk .{ .Path = .{ .namespace = namespace, .field = self.cur_token } };
+                    }
+                    break :blk .{ .Direct = self.cur_token };
+                },
+                else => {
+                    self.error_loc = self.cur_token.loc;
+                    return error.UnexpectedToken;
+                },
+            };
+
+            const arg: Argument = .{ .key = key, .value = value };
+            try args.append(self.allocator, arg);
+
+            if (self.peek_token_is(.Comma)) {
+                try self.next_token();
+            }
+        }
+
+        return args.items;
+    }
 };
+
+// Test helpers
 
 fn expectEqualNodes(expected: []const Node, actual: []const Node) !void {
     try std.testing.expectEqual(expected.len, actual.len);
@@ -182,6 +249,21 @@ inline fn expectEqualToken(e: Token, a: Token) !void {
     try std.testing.expectEqualStrings(e.data, a.data);
 }
 
+fn create_token(tag: Token.Tag, line: u32, col: u32, data: []const u8) Token {
+    const loc = Loc{ .col = col, .line = line };
+    return Token{ .tag = tag, .loc = loc, .data = data };
+}
+
+fn create_direct_interp(t: Token) Node {
+    return .{ .Interpolation = .{ .value = .{ .Direct = t } } };
+}
+
+fn create_path_interp(ns: Token, field: Token) Node {
+    return .{ .Interpolation = .{ .value = .{ .Path = .{ .namespace = ns, .field = field } } } };
+}
+
+// Tests
+
 test "parser returns correct nodes for interpolation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -197,36 +279,80 @@ test "parser returns correct nodes for interpolation" {
     const ast = try parser.parse_file();
 
     const expected: []const Node = &[_]Node{
-        .{
-            .Interpolation = .{
-                .value = .{
-                    .Direct = .{
-                        .tag = .Identifier,
-                        .loc = .{ .line = 1, .col = 4 },
-                        .data = "variable",
-                    },
-                },
-            },
-        },
-        .{
-            .Interpolation = .{
-                .value = .{
-                    .Path = .{
-                        .namespace = .{
-                            .tag = .Identifier,
-                            .loc = .{ .line = 2, .col = 4 },
-                            .data = "namespace",
-                        },
-                        .field = .{
-                            .tag = .Identifier,
-                            .loc = .{ .line = 2, .col = 14 },
-                            .data = "field",
-                        },
-                    },
-                },
-            },
-        },
+        create_direct_interp(create_token(Token.Tag.Identifier, 1, 4, "variable")),
+        create_path_interp(create_token(Token.Tag.Identifier, 2, 4, "namespace"), create_token(Token.Tag.Identifier, 2, 14, "field")),
     };
 
     try expectEqualNodes(expected, ast);
 }
+
+// test "parser returns correct nodes for component call" {
+//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+//     defer arena.deinit();
+//     const allocator = arena.allocator();
+//
+//     const input = "{{ component(arg1=\"hello\", arg2=world, arg3=hello.world )}}";
+//     var lexer = Lexer.init(input);
+//     var parser = try Parser.init(&lexer, allocator);
+//
+//     const ast = try parser.parse_file();
+//
+//     const expected: []const Node = &[_]Node{
+//         .{
+//             .ComponentCall = .{
+//                 .name = .{
+//                     .tag = .Identifier,
+//                     .loc = .{ .line = 1, .col = 4 },
+//                     .data = "component",
+//                 },
+//                 .args = &[_]Argument{
+//                     .{
+//                         .key = .{
+//                             .tag = .Identifier,
+//                             .loc = .{ .line = 1, .col = 14 },
+//                             .data = "arg1",
+//                         },
+//                         .value = .{ .String = .{
+//                             .tag = .String,
+//                             .loc = .{ .line = 1, .col = 20 },
+//                             .data = "hello",
+//                         } },
+//                     },
+//                     .{
+//                         .key = .{
+//                             .tag = .Identifier,
+//                             .loc = .{ .line = 1, .col = 28 },
+//                             .data = "arg2",
+//                         },
+//                         .value = .{ .Direct = .{
+//                             .tag = .Identifier,
+//                             .loc = .{ .line = 1, .col = 33 },
+//                             .data = "world",
+//                         } },
+//                     },
+//                     .{
+//                         .key = .{
+//                             .tag = .Identifier,
+//                             .loc = .{ .line = 1, .col = 40 },
+//                             .data = "arg3",
+//                         },
+//                         .value = .{ .Path = .{
+//                             .namespace = .{
+//                                 .tag = .Identifier,
+//                                 .loc = .{ .line = 1, .col = 45 },
+//                                 .data = "hello",
+//                             },
+//                             .field = .{
+//                                 .tag = .Identifier,
+//                                 .loc = .{ .line = 1, .col = 51 },
+//                                 .data = "world",
+//                             },
+//                         } },
+//                     },
+//                 },
+//             },
+//         },
+//     };
+//
+//     try expectEqualNodes(expected, ast);
+// }

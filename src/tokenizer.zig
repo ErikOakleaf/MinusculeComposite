@@ -15,6 +15,7 @@ pub const Token = struct {
         ClosingDelim,
         Equals,
         Dot,
+        Comma,
         For,
         In,
         End,
@@ -125,6 +126,11 @@ pub const Lexer = struct {
             '.' => {
                 self.read_ch();
                 tag = .Dot;
+                slice = self.input[start_pos..self.pos];
+            },
+            ',' => {
+                self.read_ch();
+                tag = .Comma;
                 slice = self.input[start_pos..self.pos];
             },
             0 => {
